@@ -16,7 +16,7 @@ const light = "/src/assets" + (lightRaw.startsWith("/") ? "" : "/") + lightRaw;
 const GLOB = "/src/assets/**/*.{jpeg,jpg,png,gif,svg}";
 
 const images = import.meta.glob<{ default: ImageMetadata }>(
-  "src/assets/**/*.{jpeg,jpg,png,gif,svg}",
+  "/src/assets/**/*.{jpeg,jpg,png,gif,svg}",
 );
 if (!images[dark])
   throw new Error(`"${dark}" does not exist in glob: "${GLOB}"`);
