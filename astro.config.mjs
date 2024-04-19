@@ -19,6 +19,9 @@ export default defineConfig({
       social: {
         github: "https://github.com/ByteAtATime/evm.guide",
       },
+      editLink: {
+        baseUrl: "https://github.com/ByteAtATime/evm.guide/blob/main/",
+      },
       sidebar: [
         {
           label: "Book",
