@@ -1,0 +1,155 @@
+---
+title: Calldata
+---
+
+import { Steps } from "@astrojs/starlight/components"
+import ThemedImage from "@components/ThemedImage.astro"
+
+In Ethereum, all transactions can have a **calldata** attached to them, which can contain arbitrary data. However, when interacting with smart contracts, the calldata follows a specific structure to invoke functions and provide arguments.
+
+## Layout
+
+Calldata generally has three main parts:
+
+1. [**The function selector**](/concepts/function-selectors), which is the first 4 bytes of the Keccak-256 hash of the function signature.
+2. **The heads**, which is an array of values and pointers
+3. **The tails**, which is an array of values that the pointers, well, point to.
+
+### Dynamic vs. Static
+
+Remember how the arguments were oddly split up into "heads" and "tails"? That's because there are two distinct types of values:
+
+1. **Static values** that have a defined size. For example, no matter the inputted value, a `uint256` is always 32 bytes, and an `address` is always 20 bytes.
+2. **Dynamic values** which have variable sizes. For example, a `string` parameter does not have a fixed size, nor does the `bytes` type.
+
+As a result, we can directly store a static value, but because each part in the heads part are assumed to be 32 bytes long, cannot store a dynamic value that could be longer than that.
+
+Here, let's take a look at a few examples to help you understand how it works:
+
+#### Static Values
+
+The simplest case would be a static value, which is just the binary data padded to 32 bytes. For example, say you had the following `address`:
+
+```solidity
+0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+```
+
+All addresses are 20 bytes, so you would need 12 bytes of zeros at the start (24 characters):
+
+```solidity
+0x000000000000000000000000d8dA6BF26964aF9D7eEd9e03E53415D37aA96045 // vitalik.eth padded to 32 bytes
+```
+
+Similarly, if you had any number, you would just prepend zeros until it reached 32 bytes:
+
+```solidity
+0x0000000000000000000000000000000000000000000000000000000000000069 // 0x69 padded to 32 bytes
+```
+
+Notice that all static types are less than 32 bytes, so they all fit perfectly within a single 32-byte segment. Therefore, they are directly stored in the heads, and have no data in the tails.
+
+For example, take the following function:
+
+```solidity
+function balanceOf(address _address) public returns (uint256) {}
+```
+
+This has a single static parameter, the address, and therefore the calldata of a transaction calling it would be something like this:
+
+```solidity
+0x70a08231 // the function selector, from keccak256("balanceOf(address)")
+0x000000000000000000000000d8dA6BF26964aF9D7eEd9e03E53415D37aA96045 // vitalik.eth, the argument to the first parameter, padded to 32 bytes
+```
+
+All together, the function calldata would be:
+
+```solidity
+0x70a08231000000000000000000000000d8dA6BF26964aF9D7eEd9e03E53415D37aA96045 // calldata of balanceOf(vitalik.eth)
+```
+
+### Dynamic Values
+
+Dynamic values are a bit trickier. They're comprised of two parts:
+
+1. The **pointer** to a location in "tails"
+2. The **value** itself in "tails"
+
+The pointer is very simple: it's an offset in the calldata, marking where the data/value is found.
+
+The value, stored in tails, also has two values:
+
+1. The **length** of the data in bytes, located at the location the pointer references (the first byte of the data)
+2. The **actual data**, located immediately after. If the length of the data is not a multiple of 32 bytes, it's padded with zeros in order to maintain alignment.
+
+For example, let's say we had the following contract:
+
+```solidity
+contract Auction {
+    function bid(string id, uint256 amount) public returns (uint256) {
+        // create a new bid
+    }
+}
+```
+
+If we wanted to call the `bid` function with the parameters `"cool-sword-42"` and `500`, here is the (very heavily annotated) data:
+
+```solidity
+0x5f483313 // the function selector, from keccak256("bid(string,uint256)")
+0x0000000000000000000000000000000000000000000000000000000000000040 // The *location* of `id`, the string, padded to 32 bytes
+// ^-- this value (0x40) is 64 in decimal, which points to the 0xd word (the length of the string)
+0x00000000000000000000000000000000000000000000000000000000000001f4 // The *value* of `amount` padded to 32 bytes
+// ^-- this is not a pointer, this is the value itself (500 in hex is 1f4)
+// --- end of heads, start of tails ---
+0x000000000000000000000000000000000000000000000000000000000000000d // The length of the string below
+0x636f6f6c2d73776f72642d343200000000000000000000000000000000000000 // The *value* of `id`, at position 64.
+// ^-- this is "cool-sword-42" in hex; notice how the padding zeros are on the right, not the left!
+```
+
+Putting this all together, to call the function, the calldata would be:
+
+```solidity
+0x5f483313000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000001f4000000000000000000000000000000000000000000000000000000000000000d636f6f6c2d73776f72642d343200000000000000000000000000000000000000
+```
+
+Whew, that was a mouthful! Let's go through that step by step:
+
+<Steps>
+1. Get the function selector - this is outlined in the [function selectors](/concepts/function-selectors) page.
+
+   In this case, our function selector would be `0x5f483313`. Let's keep a running total of our calldata; for now, it's just `0x5f483313`.
+
+2. Encode the first parameter. The value is `"cool-sword-42"`, a string, which counts as a dynamic value. Therefore, we simply add a pointer to the location in the tails. Because we don't know that yet, I'll add in a placeholder for now.
+
+   Calldata so far:
+   ```solidity "[pointer to string]"
+   0x5f483313[pointer to string]
+   ```
+
+3. Encode the second parameter, which is a `uint256`. Because this is static, we get the value, 500, and convert it into hex, `0x1f4`. We then pad it at the start, and insert it into the calldata.
+
+   Calldata so far:
+   ```solidity "00000000000000000000000000000000000000000000000000000000000001f4"
+   0x5f483313[pointer to string]00000000000000000000000000000000000000000000000000000000000001f4
+   ```
+
+4. Encode the string value. First, we add the length of the string, 13 (`0xd` in hex) onto our calldata, padded to 32 bytes (you may need to scroll horizontally to see this):
+   ```solidity "000000000000000000000000000000000000000000000000000000000000000d"
+   0x5f483313[pointer to string]00000000000000000000000000000000000000000000000000000000000001f4000000000000000000000000000000000000000000000000000000000000000d
+   ```
+
+   And, now that we know where the string starts, we can also replace the placeholder. Therefore, our calldata becomes:
+   ```solidity "0000000000000000000000000000000000000000000000000000000000000040"
+   0x5f483313000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000001f4000000000000000000000000000000000000000000000000000000000000000d
+   ```
+
+5. Lastly, we add the string itself. This is pretty straightforward; we encode the string into UTF-8 (which, for our string, is the same as ASCII) and add zeros until it reaches a multiple of 32 bytes. Therefore, our final calldata becomes:
+   
+   ```solidity "636f6f6c2d73776f72642d343200000000000000000000000000000000000000"
+   0x5f483313000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000001f4000000000000000000000000000000000000000000000000000000000000000d636f6f6c2d73776f72642d343200000000000000000000000000000000000000
+   ```
+</Steps>
+
+If you prefer a visual view, take a look at this diagram:
+
+<ThemedImage dark="concepts/calldata/dissection-dark.svg" light="concepts/calldata/dissection-light.svg" alt="Diagram labeling each part of the calldata" />
+
