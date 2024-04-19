@@ -1,0 +1,179 @@
+---
+title: Function Selectors
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components"
+import ThemedImage from "@components/ThemedImage.astro"
+
+<Aside type="tip" title="TL;DR (Summary)">
+**What they are**: Function selectors are used as a more compact way to identify what function is being called. They are calculated by taking the first 4 bytes (8 hex chars) from the Keccak-256 hash of the function signature. Function signatures are comprised of the function name and parameter types, such as `bid(string,uint256)`.
+
+**Why they exist**: This method is a compromise between compactness and collision probability, as there are over 4 billion possibilities for each signature, and because of the non-determinism nature of hashes, means that the chance of each selector is about equal.
+
+**Downsides**: However, given a function selector, there is no simple way get the name/parameters of the original function. However, the [Ethereum Signature Database](https://www.4byte.directory) allows you to search up a function selector, comparing it to its database of over 1.3 million selectors to find any matches.
+</Aside>
+
+Let's say you have the following contract:
+
+```solidity
+contract Auction {
+    function bid(string id, uint256 amount) public returns (uint256) {
+        // create a new bid
+    }
+
+    function bid(string id) public returns (uint256) {
+        // increment the current bid by 10
+        uint256 amount = currentBid[id] + 10;
+
+        // create the new bid
+    }
+}
+```
+
+Pretty simple contract. If you've read the [calldata](/concepts/calldata) section, you already know that calldata is a giant string of bytes. How does a contract know which function to call when it receives a transaction?
+
+The answer that Solidity developers came up with is function selectors.
+
+## The Problem
+
+First, let's understand the problem. When you call a function on a contract, you need to specify what function you want to call. The EVM doesn't have any built-in method of doing this; as a matter of fact, it doesn't even have the concept of functions! Therefore, we also want to do a little optimization; specifically, we want:
+
+1. A short "id" for each function to save gas
+2. A way to differentiate between each function
+
+## Possible Solutions
+
+Before we dive into function selectors, let's take a look at how you might approach this problem. The obvious solution is to use the function name, right? Pretty simple. However, it's easy to see that there's a problem: **uniqueness**.
+
+In the example above, we have two functions with the same name but different parameters. This is completely valid in Solidity due to [function overloading](https://docs.soliditylang.org/en/latest/contracts.html#function-overloading), but this is where the problem arises. If we use the function name as the identifier, how would Solidity know which function to call?
+
+Another solution is to use the whole function signature. The simplest signature would be to just grab the whole function signature and use that as the identifier. In this case, we would end up with:
+
+```solidity
+function bid(string id, uint256 amount) public returns (uint256) {}
+function bid(string id) public returns (uint256) {}
+```
+
+Well, that's a start. But there's a problem: **size**. As humans, we prefer descriptive names: you have no idea what `8fk3ncj` does, but it's easy to understand `createNewNFTFromURI`. However, computers don't care about readability, just uniqueness. If you have, say, 15 functions, you really only need $\lceil log_2(15) \rceil = 4$ bits of data to represent each function.
+
+<Aside type="note" title="How did I get that?">
+
+  If we have 15 functions, then we need to be able to store 15 unique values. $n$ bits can store $2^n$ values, because each bit has two possible values (`0` or `1`), growing exponentially.
+
+  Therefore, we just need to calculate how many bits we need to store 15 values. The reverse of an exponent is a logarithm (if $b^n=c$, then $log_b(c)=n$), so we take the base-2 logarithm of $15$, and get just over $3.9$. Because we can't have a fractional bit, we have to round that up (removing it loses information), and we get $4$ bits.
+
+  To generalize that, if we have $n$ functions, we need to store $n$ unique values, which is storable in $\lceil log_2(n) \rceil$ bits.
+</Aside>
+
+If that's the case, let's do some optimization. What's unnecessary in the function signature? Well, as it turns out, quite a lot:
+
+1. **The `function` keyword**: the whole point of the function selector is to identify a function, so we don't need to specify that it's a function.
+2. **The return type**: this can't be overloaded, so it's not necessary.
+3. **The visibility**: much like the return type, this can't be overloaded, so we don't need it either.
+4. **The parameter names**: Solidity doesn't care about the parameter names, only the types, so we can strip out those too. While we're at it, let's also remove the spaces between the parameter types.
+
+In the end, we end up with something like this:
+
+```solidity
+bid(string,uint256)
+bid(string)
+```
+
+Okay, we have some good foundations here, but I still think it's a little long. Wow, I sure wish there was a way to generate a unique, fixed-length identifier for each function...
+
+Oh wait, we do! Hash functions are a great way to generate a fixed-length identifier for a given input. But 256 bits doesn't bring down the size of the signature; as a matter of fact, it's longer than both our signatures combined! Let's take a look at how the Solidity team decided to solve this problem.
+
+## Function Selectors
+
+Okay, so we know that we want to hash the signatures above. Putting it through Keccak-256, I get the following values:
+
+```solidity
+0x5f4833134bc906e5711b5de0294779a3a4f6a061f27a883e7f67a35c9441aec6 // keccak256("bid(string,uint256)")
+0x7aef951cf3652da530bdeb96c2981a0dc12a3385bfcc0c2082f80721b3d123d1 // keccak256("bid(string)")
+```
+
+Notice that, because hashes have to be irreversible, we can't go back from the hash to the original string. As a side effect, this means that hashes are practically random, even for each individual character. This is great news, because it means that we can simply use a portion of this hash, and still be pretty confident we won't have any collisions.
+
+Solidity, specifically, uses the first 4 bytes (8 hexadecimal characters) of the hash as the function selector. This means that the function selectors for the two functions above are:
+
+```solidity
+0x5f483313
+0x7aef951c
+```
+
+To summarize, we:
+<Steps>
+1. Grab the function declaration:
+   ```solidity
+   function bid(string id, uint256 amount) public returns (uint256) {}
+   function bid(string id) public returns (uint256) {}
+   ```
+
+2. Remove all unnecessary parts, leaving just the function name and parameter types:
+   ```solidity
+   bid(string,uint256)
+   bid(string)
+   ```
+
+3. Run these through Keccak-256:
+   ```solidity
+   0x5f4833134bc906e5711b5de0294779a3a4f6a061f27a883e7f67a35c9441aec6 // keccak256("bid(string,uint256)")
+   0x7aef951cf3652da530bdeb96c2981a0dc12a3385bfcc0c2082f80721b3d123d1 // keccak256("bid(string)")
+   ```
+
+4. And lastly, grab the first 4 bytes, or 8 hex chars:
+   ```solidity
+   0x5f483313 // function selector of bid(string id, uint256 amount)
+   0x7aef951c // function selector of bid(string id)
+   ```
+</Steps>
+
+If you prefer, here is a graphical representation of this process:
+
+<ThemedImage dark="concepts/function-selectors/flowchart-dark.svg" light="concepts/function-selectors/flowchart-light.svg" alt="Flowchart of function selector generation process" />
+
+This is a great solution because it's:
+
+1. **Unique**: there are $256^{4} = 2^{32}$ possible function selectors, which is more than enough for most contracts. To put that in perspective, you would need around ten thousand functions before encountering even a 1% probability of collision.
+2. **Short**: only 4 bytes long, which is great for saving gas.
+3. **Fast**: hashing is a very fast operation, so it doesn't add much overhead to the function call.
+4. **Simple**: it's easy to understand and implement.
+
+### Selectors in Calldata
+
+Selectors make up the first 4 bytes of the [calldata](/concepts/calldata) of a transaction. For example, [the transaction with hash `0x99602...804c3`](https://etherscan.io/tx/0x99602216833a357edd484572575feab3ca7a74fea7917984b5319178f14804c3) on the Ethereum mainnet has the following calldata:
+
+```solidity
+0xf14fcbc8b7cd9eb752d95bedc27cf2e84fa1a49dc00b59af851371cc064d3a820f2d22c3
+```
+
+According to Etherscan, in the "Input Data" section (you may have to press "Click to show more"), the function I called was `commit(bytes32 commitment)`. Let's verify that the calldata is the same.
+
+First, we get the function signature. In this case, we just drop the parameter name "`commitment`", yielding us a result of `commit(bytes32)`.
+
+Then, we hash this. Here is what I got:
+
+```solidity
+0xf14fcbc8f6996b31406143e2613e60bde3c1118cfe166c0aa27ba40ef1033df5 // keccak256("commit(bytes32)")
+```
+
+Lastly, we take the first 8 characters, giving us a function selector of `0xf14fcbc8`. The first 8 characters of the calldata were `0xf14fcbc8` -- a perfect match!
+
+### Reversing the Process
+
+You might have noticed a small problem with this algorithm: if you have a function selector, how do you know which function it corresponds to? Well, if you have the signatures of all the functions in the contract, the simplest way is to just hash each one and compare it to the function selector.
+
+But what if you didn't? That's where the [Ethereum Signature Database](https://4byte.directory) comes in. This handy website allows you to search for function selectors and get the corresponding function signature. At the time of writing, there are over 1.3 million signatures and counting!
+
+In fact, we can use this database to verify the function selectors we calculated above. If you [search up `0x5f483313`](https://www.4byte.directory/signatures/?bytes4_signature=0x5f483313), here is what you should see:
+
+![Searching up the selector "0x5f483313" on 4byte.directory](@assets/concepts/function-selectors/4byte-0x5f483313.png)
+
+Perfect! As you can see, out of the 1.3 million signatures, only one matches our selector. This shows how rare collisions are with function selectors, even though they're limited to just 4 bytes.
+
+If you [do the same with `0x7aef951c`](https://www.4byte.directory/signatures/?bytes4_signature=0x7aef951c), you should see the same thing, just with the other signature:
+
+![Searching up the selector "0x7aef951c" on 4byte.directory](@assets/concepts/function-selectors/4byte-0x7aef951c.png)
+
+And lastly, if you try searching up `0xf14fcbc8`, you should find that the corresponding function signature is `commit(bytes32)`. Sweet!
+

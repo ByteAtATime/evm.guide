@@ -1,0 +1,36 @@
+---
+import { Image } from "astro:assets";
+
+type Props = {
+  dark: string;
+  light: string;
+  alt: string;
+  class?: string | undefined;
+};
+
+const { dark: darkRaw, light: lightRaw, alt } = Astro.props;
+
+const dark = "/src/assets" + (darkRaw.startsWith("/") ? "" : "/") + darkRaw;
+const light = "/src/assets" + (lightRaw.startsWith("/") ? "" : "/") + lightRaw;
+
+const GLOB = "/src/assets/**/*.{jpeg,jpg,png,gif,svg}";
+
+const images = import.meta.glob<{ default: ImageMetadata }>(
+  "src/assets/**/*.{jpeg,jpg,png,gif,svg}",
+);
+if (!images[dark])
+  throw new Error(`"${dark}" does not exist in glob: "${GLOB}"`);
+if (!images[light])
+  throw new Error(`"${light}" does not exist in glob: "${GLOB}"`);
+---
+
+<Image
+  src={images[dark]()}
+  {alt}
+  class={`!hidden dark:!block ${Astro.props.class}`}
+/>
+<Image
+  src={images[light]()}
+  {alt}
+  class={`block dark:hidden ${Astro.props.class}`}
+/>
